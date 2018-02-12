@@ -5,7 +5,7 @@
 
     A microblogging application written with Flask and sqlite3.
 
-    :copyright: © 2010 by the Pallets team.
+    :copyright: (c) 2015 by Armin Ronacher.
     :license: BSD, see LICENSE for more details.
 """
 
@@ -56,12 +56,24 @@ def init_db():
         db.cursor().executescript(f.read())
     db.commit()
 
-
 @app.cli.command('initdb')
 def initdb_command():
     """Creates the database tables."""
     init_db()
     print('Initialized the database.')
+
+def populate_db():
+    """Populate the database with test data."""
+    db = get_db()
+    with app.open_resource('population.sql', mode='r') as f:
+        db.cursor().executescript(f.read())
+    db.commit()
+
+@app.cli.command('populatedb')
+def populatedb_command():
+    """populates the database tables with test data."""
+    populate_db()
+    print('Populated the database.')
 
 
 def query_db(query, args=(), one=False):

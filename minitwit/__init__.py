@@ -1,1 +1,1 @@
-from .minitwit import app
+from .mt_api import app

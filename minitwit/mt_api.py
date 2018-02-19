@@ -1,0 +1,304 @@
+# -*- coding: utf-8 -*-
+"""
+    mt_api
+    ~~~~~~~~
+
+    A REST API for a microblogging application written with Flask and sqlite3.
+
+    :copyright: (c) 2015 by Armin Ronacher
+    :license: BSD, see LICENSE for more details.
+
+    Changes made by in 2018 by Matt Corrente
+"""
+
+import time
+from sqlite3 import dbapi2 as sqlite3
+from hashlib import md5
+from datetime import datetime
+from flask import Flask, request, session, url_for, redirect, \
+     render_template, abort, g, flash, _app_ctx_stack, jsonify
+from flask_basicauth import BasicAuth
+from werkzeug import check_password_hash, generate_password_hash
+
+# configuration
+DATABASE = '/tmp/minitwit.db'
+PER_PAGE = 30
+DEBUG = True
+SECRET_KEY = b'_5#y2L"F4Q8z\n\xec]/'
+
+# create our little application :)
+app = Flask('mt_api')
+app.config.from_object(__name__)
+app.config.from_envvar('MINITWIT_SETTINGS', silent=True)
+
+basic_auth = BasicAuth(app)
+
+# ------------------------------------------------------------------------------
+# MINITWIT API START
+# ------------------------------------------------------------------------------
+#
+@app.route('/minitwit/api/public_timeline', methods=['GET'])
+def public_timeline_api():
+    """Displays all tweets in the database."""
+    messages=query_db('''
+        select user.username, user.email, message.text, message.pub_date from message, user
+        where message.author_id = user.user_id
+        order by message.pub_date desc''')
+    data = list()
+    for message in messages:
+      dict_message = dict(message)
+      dict_message['pub_date'] = format_datetime(dict_message['pub_date'])
+      data.append(dict_message)
+
+    return jsonify(data)
+
+@app.route('/minitwit/api/<username>/messages', methods=['GET'])
+def user_timeline_api(username):
+    """Display's a users tweets."""
+    profile_user = query_db('select * from user where username = ?',
+                            [username], one=True)
+    if profile_user is None:
+        abort(404)
+    followed = False
+    messages=query_db('''
+            select user.username, user.email, message.text, message.pub_date from message, user where
+            user.user_id = message.author_id and user.user_id = ?
+            order by message.pub_date desc''',
+            [profile_user['user_id']])
+
+    data = list()
+    for message in messages:
+        dict_message = dict(message)
+        dict_message['pub_date'] = format_datetime(dict_message['pub_date'])
+        data.append(dict_message)
+    return jsonify(data)
+
+@app.route('/minitwit/api/personal_timeline', methods=['POST'])
+def personal_timeline_api():
+    """Displays the authenticated user's timeline."""
+    content = request.get_json()
+    if basic_auth.check_credentials(content['username'],content['password']):
+        user_id = get_user_id(content['username'])
+
+        messages=query_db('''
+            select user.username, user.email, message.text, message.pub_date
+            from message, user where
+            message.author_id = user.user_id and (
+                user.user_id = ? or
+                user.user_id in (select whom_id from follower
+                                        where who_id = ?))
+            order by message.pub_date desc''',
+            [user_id, user_id])
+
+        data = list()
+        for message in messages:
+            dict_message = dict(message)
+            dict_message['pub_date'] = format_datetime(dict_message['pub_date'])
+            data.append(dict_message)
+        return jsonify(data)
+    else:
+        return "not authenticated"
+
+@app.route('/minitwit/api/personal_followers', methods=['POST'])
+def personal_followers_api():
+    """Displays all followed users of authenticated user."""
+    content = request.get_json()
+    if basic_auth.check_credentials(content['username'],content['password']):
+        user_id = get_user_id(content['username'])
+
+        messages=query_db('''
+            select user.username from user
+            where user.user_id in (select whom_id from follower where who_id = ?)''',[user_id])
+
+        data = list()
+        for message in messages:
+            data.append(dict(message))
+        return jsonify(data)
+    else:
+        return "not authenticated"
+
+@app.route('/minitwit/api/add_message', methods=['PUT'])
+def add_message_api():
+    """Registers a new message for the user."""
+    content = request.get_json()
+    if basic_auth.check_credentials(content['username'],content['password']):
+        if content['text']:
+            user_id = get_user_id(content['username'])
+            db = get_db()
+            db.execute('''insert into message (author_id, text, pub_date)
+              values (?, ?, ?)''', (user_id, content['text'],
+                                    int(time.time())))
+            db.commit()
+            return'Your message was recorded'
+        else:
+            return 'some kind of error...'
+    else:
+        return "not authenticated"
+
+@app.route('/minitwit/api/follow/<username>', methods=['PUT'])
+def follow_user_api(username):
+    content = request.get_json()
+    if basic_auth.check_credentials(content['username'],content['password']):
+        """Adds the authenticated user as follower of the given user."""
+        if not g.user:
+            abort(401)
+        whom_id = get_user_id(username)
+        if whom_id is None:
+            abort(404)
+        user_id = get_user_id(content['username'])
+        db = get_db()
+        db.execute('insert into follower (who_id, whom_id) values (?, ?)',
+                  [user_id, whom_id])
+        db.commit()
+        return('You are now following "%s"' % username)
+    else:
+        return "not authenticated"
+
+@app.route('/minitwit/api/unfollow/<username>', methods=['DELETE'])
+def unfollow_user_api(username):
+    content = request.get_json()
+    if basic_auth.check_credentials(content['username'],content['password']):
+        """Removes the current user as follower of the given user."""
+        if not g.user:
+            abort(401)
+        whom_id = get_user_id(username)
+        if whom_id is None:
+            abort(404)
+        user_id = get_user_id(content['username'])
+        db = get_db()
+        db.execute('delete from follower where who_id=? and whom_id=?', [user_id, whom_id])
+        db.commit()
+        return('You are no longer following "%s"' % username)
+    else:
+        return "not authenticated"
+
+@app.route('/minitwit/api/register', methods=['PUT'])
+def register_api():
+    """Registers the user."""
+    content = request.get_json()
+    if not content['username']:
+        error = 'You have to enter a username'
+    elif not content['email'] or \
+            '@' not in content['email']:
+        error = 'You have to enter a valid email address'
+    elif not content['password']:
+        error = 'You have to enter a password'
+    elif content['password'] != content['password2']:
+        error = 'The two passwords do not match'
+    elif get_user_id(content['username']) is not None:
+        error = 'The username is already taken'
+    else:
+        db = get_db()
+        db.execute('''insert into user (
+          username, email, pw_hash) values (?, ?, ?)''',
+          [content['username'], content['email'],
+           generate_password_hash(content['password'])])
+        db.commit()
+        return 'Account successfully registered'
+    return error
+# ------------------------------------------------------------------------------
+# MINITWIT API END
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# Overide basic_auth methods start
+# ------------------------------------------------------------------------------
+def _check_credentials(username, password):
+    """Logs the user in."""
+    user = query_db('''select * from user where
+        username = ?''', [username], one=True)
+    if user is None:
+        error = 'Invalid username'
+    elif not check_password_hash(user['pw_hash'],
+                                 password):
+        error = 'Invalid password'
+    else:
+        return True
+    return False
+basic_auth.check_credentials = _check_credentials
+
+# ------------------------------------------------------------------------------
+# Override basic_auth methods end
+# ------------------------------------------------------------------------------
+
+def get_db():
+    """Opens a new database connection if there is none yet for the
+    current application context.
+    """
+    top = _app_ctx_stack.top
+    if not hasattr(top, 'sqlite_db'):
+        top.sqlite_db = sqlite3.connect(app.config['DATABASE'])
+        top.sqlite_db.row_factory = sqlite3.Row
+    return top.sqlite_db
+
+
+@app.teardown_appcontext
+def close_database(exception):
+    """Closes the database again at the end of the request."""
+    top = _app_ctx_stack.top
+    if hasattr(top, 'sqlite_db'):
+        top.sqlite_db.close()
+
+
+def init_db():
+    """Initializes the database."""
+    db = get_db()
+    with app.open_resource('schema.sql', mode='r') as f:
+        db.cursor().executescript(f.read())
+    db.commit()
+
+@app.cli.command('initdb')
+def initdb_command():
+    """Creates the database tables."""
+    init_db()
+    print('Initialized the database.')
+
+def populate_db():
+    """Populate the database with test data."""
+    db = get_db()
+    with app.open_resource('population.sql', mode='r') as f:
+        db.cursor().executescript(f.read())
+    db.commit()
+
+@app.cli.command('populatedb')
+def populatedb_command():
+    """populates the database tables with test data."""
+    populate_db()
+    print('Populated the database.')
+
+
+def query_db(query, args=(), one=False):
+    """Queries the database and returns a list of dictionaries."""
+    cur = get_db().execute(query, args)
+    rv = cur.fetchall()
+    return (rv[0] if rv else None) if one else rv
+
+
+def get_user_id(username):
+    """Convenience method to look up the id for a username."""
+    rv = query_db('select user_id from user where username = ?',
+                  [username], one=True)
+    return rv[0] if rv else None
+
+
+def format_datetime(timestamp):
+    """Format a timestamp for display."""
+    return datetime.utcfromtimestamp(timestamp).strftime('%Y-%m-%d @ %H:%M')
+
+
+def gravatar_url(email, size=80):
+    """Return the gravatar image for the given email address."""
+    return 'https://www.gravatar.com/avatar/%s?d=identicon&s=%d' % \
+        (md5(email.strip().lower().encode('utf-8')).hexdigest(), size)
+
+
+@app.before_request
+def before_request():
+    g.user = None
+    if 'user_id' in session:
+        g.user = query_db('select * from user where user_id = ?',
+                          [session['user_id']], one=True)
+
+# add some filters to jinja
+app.jinja_env.filters['datetimeformat'] = format_datetime
+app.jinja_env.filters['gravatar'] = gravatar_url

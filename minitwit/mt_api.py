@@ -37,7 +37,7 @@ basic_auth = BasicAuth(app)
 # MINITWIT API START
 # ------------------------------------------------------------------------------
 #
-@app.route('/minitwit/api/public_timeline', methods=['GET'])
+@app.route('/minitwit/api/public/timeline', methods=['GET'])
 def public_timeline_api():
     """Displays all tweets in the database."""
     messages=query_db('''
@@ -73,7 +73,7 @@ def user_timeline_api(username):
         data.append(dict_message)
     return jsonify(data), 200
 
-@app.route('/minitwit/api/personal_timeline', methods=['POST'])
+@app.route('/minitwit/api/personal/timeline', methods=['POST'])
 def personal_timeline_api():
     """Displays the authenticated user's timeline."""
     content = request.get_json()
@@ -99,7 +99,7 @@ def personal_timeline_api():
     else:
         return generate_error_json("Authentication failed. Check credentials and try again.", 403)
 
-@app.route('/minitwit/api/personal_followers', methods=['POST'])
+@app.route('/minitwit/api/personal/followed', methods=['POST'])
 def personal_followers_api():
     """Displays all followed users of authenticated user."""
     content = request.get_json()
@@ -117,7 +117,7 @@ def personal_followers_api():
     else:
         return generate_error_json("Authentication failed. Check credentials and try again.", 403)
 
-@app.route('/minitwit/api/add_message', methods=['PUT'])
+@app.route('/minitwit/api/personal/add/message', methods=['PUT'])
 def add_message_api():
     """Registers a new message for the user."""
     content = request.get_json()
@@ -135,7 +135,7 @@ def add_message_api():
     else:
         return generate_error_json("Authentication failed. Check credentials and try again.", 403)
 
-@app.route('/minitwit/api/follow/<username>', methods=['PUT'])
+@app.route('/minitwit/api/personal/follow/<username>', methods=['PUT'])
 def follow_user_api(username):
     content = request.get_json()
     if basic_auth.check_credentials(content['username'],content['password']):
@@ -144,6 +144,8 @@ def follow_user_api(username):
         if whom_id is None:
             abort(404)
         user_id = get_user_id(content['username'])
+        if whom_id == user_id:
+            return generate_error_json("Unprocessible Entity. You cannot follow yourself.", 422)
         db = get_db()
         db.execute('insert into follower (who_id, whom_id) values (?, ?)',
                   [user_id, whom_id])
@@ -152,7 +154,7 @@ def follow_user_api(username):
     else:
         return generate_error_json("Authentication failed. Check credentials and try again.", 403)
 
-@app.route('/minitwit/api/unfollow/<username>', methods=['DELETE'])
+@app.route('/minitwit/api/personal/unfollow/<username>', methods=['DELETE'])
 def unfollow_user_api(username):
     content = request.get_json()
     if basic_auth.check_credentials(content['username'],content['password']):
@@ -288,15 +290,6 @@ def gravatar_url(email, size=80):
     return 'https://www.gravatar.com/avatar/%s?d=identicon&s=%d' % \
         (md5(email.strip().lower().encode('utf-8')).hexdigest(), size)
 
-
-@app.before_request
-def before_request():
-    g.user = None
-    if 'user_id' in session:
-        g.user = query_db('select * from user where user_id = ?',
-                          [session['user_id']], one=True)
-
-
 def generate_error_json(message, errorNum):
     data = dict()
     data["message"] = message
@@ -315,6 +308,13 @@ def internal_server_error(e):
     data["message"] = "Internal Server Error. Check that all your JSON parameters are correct."
     data["code"] = 500
     return jsonify(error=data), 500
+
+@app.errorhandler(400)
+def internal_server_error(e):
+    data = dict()
+    data["message"] = "Bad Request. The browser (or proxy) sent a request that this server could not understand."
+    data["code"] = 400
+    return jsonify(error=data), 400
 
 @app.errorhandler(404)
 def page_not_found(e):

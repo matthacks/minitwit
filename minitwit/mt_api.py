@@ -23,7 +23,7 @@ from werkzeug import check_password_hash, generate_password_hash
 # configuration
 DATABASE = '/tmp/minitwit.db'
 PER_PAGE = 30
-DEBUG = True
+DEBUG = False
 SECRET_KEY = b'_5#y2L"F4Q8z\n\xec]/'
 
 # create our little application :)
@@ -50,7 +50,7 @@ def public_timeline_api():
       dict_message['pub_date'] = format_datetime(dict_message['pub_date'])
       data.append(dict_message)
 
-    return jsonify(data)
+    return jsonify(data), 200
 
 @app.route('/minitwit/api/<username>/messages', methods=['GET'])
 def user_timeline_api(username):
@@ -71,7 +71,7 @@ def user_timeline_api(username):
         dict_message = dict(message)
         dict_message['pub_date'] = format_datetime(dict_message['pub_date'])
         data.append(dict_message)
-    return jsonify(data)
+    return jsonify(data), 200
 
 @app.route('/minitwit/api/personal_timeline', methods=['POST'])
 def personal_timeline_api():
@@ -95,9 +95,9 @@ def personal_timeline_api():
             dict_message = dict(message)
             dict_message['pub_date'] = format_datetime(dict_message['pub_date'])
             data.append(dict_message)
-        return jsonify(data)
+        return jsonify(data), 200
     else:
-        return "not authenticated"
+        return generate_error_json("Authentication failed. Check credentials and try again.", 403)
 
 @app.route('/minitwit/api/personal_followers', methods=['POST'])
 def personal_followers_api():
@@ -113,9 +113,9 @@ def personal_followers_api():
         data = list()
         for message in messages:
             data.append(dict(message))
-        return jsonify(data)
+        return jsonify(data), 200
     else:
-        return "not authenticated"
+        return generate_error_json("Authentication failed. Check credentials and try again.", 403)
 
 @app.route('/minitwit/api/add_message', methods=['PUT'])
 def add_message_api():
@@ -129,19 +129,17 @@ def add_message_api():
               values (?, ?, ?)''', (user_id, content['text'],
                                     int(time.time())))
             db.commit()
-            return'Your message was recorded'
+            return generate_success_json('Your message was recorded', 200)
         else:
-            return 'some kind of error...'
+            return generate_error_json('Unprocessible Entity. Cannot create a message without any text.', 422)
     else:
-        return "not authenticated"
+        return generate_error_json("Authentication failed. Check credentials and try again.", 403)
 
 @app.route('/minitwit/api/follow/<username>', methods=['PUT'])
 def follow_user_api(username):
     content = request.get_json()
     if basic_auth.check_credentials(content['username'],content['password']):
         """Adds the authenticated user as follower of the given user."""
-        if not g.user:
-            abort(401)
         whom_id = get_user_id(username)
         if whom_id is None:
             abort(404)
@@ -150,17 +148,15 @@ def follow_user_api(username):
         db.execute('insert into follower (who_id, whom_id) values (?, ?)',
                   [user_id, whom_id])
         db.commit()
-        return('You are now following "%s"' % username)
+        return generate_success_json('You are now following %s' % username, 201)
     else:
-        return "not authenticated"
+        return generate_error_json("Authentication failed. Check credentials and try again.", 403)
 
 @app.route('/minitwit/api/unfollow/<username>', methods=['DELETE'])
 def unfollow_user_api(username):
     content = request.get_json()
     if basic_auth.check_credentials(content['username'],content['password']):
         """Removes the current user as follower of the given user."""
-        if not g.user:
-            abort(401)
         whom_id = get_user_id(username)
         if whom_id is None:
             abort(404)
@@ -168,25 +164,25 @@ def unfollow_user_api(username):
         db = get_db()
         db.execute('delete from follower where who_id=? and whom_id=?', [user_id, whom_id])
         db.commit()
-        return('You are no longer following "%s"' % username)
+        return generate_success_json('You are no longer following %s' % username, 200)
     else:
-        return "not authenticated"
+        return generate_error_json("Authentication failed. Check credentials and try again.", 403)
 
 @app.route('/minitwit/api/register', methods=['PUT'])
 def register_api():
     """Registers the user."""
     content = request.get_json()
     if not content['username']:
-        error = 'You have to enter a username'
+        error = 'You have to enter a username.'
     elif not content['email'] or \
             '@' not in content['email']:
-        error = 'You have to enter a valid email address'
+        error = 'You have to enter a valid email address.'
     elif not content['password']:
-        error = 'You have to enter a password'
+        error = 'You have to enter a password.'
     elif content['password'] != content['password2']:
-        error = 'The two passwords do not match'
+        error = 'The two passwords do not match.'
     elif get_user_id(content['username']) is not None:
-        error = 'The username is already taken'
+        error = 'The username is already taken.'
     else:
         db = get_db()
         db.execute('''insert into user (
@@ -194,8 +190,9 @@ def register_api():
           [content['username'], content['email'],
            generate_password_hash(content['password'])])
         db.commit()
-        return 'Account successfully registered'
-    return error
+        return generate_success_json('Account successfully registered', 201)
+    return generate_error_json('Unprocessible Entity. ' + error, 422)
+
 # ------------------------------------------------------------------------------
 # MINITWIT API END
 # ------------------------------------------------------------------------------
@@ -298,6 +295,40 @@ def before_request():
     if 'user_id' in session:
         g.user = query_db('select * from user where user_id = ?',
                           [session['user_id']], one=True)
+
+
+def generate_error_json(message, errorNum):
+    data = dict()
+    data["message"] = message
+    data["code"] = errorNum
+    return jsonify(error=data), errorNum
+
+def generate_success_json(message, statusNum):
+    data = dict()
+    data["message"] = message
+    data["code"] = statusNum
+    return jsonify(data), statusNum
+
+@app.errorhandler(500)
+def internal_server_error(e):
+    data = dict()
+    data["message"] = "Internal Server Error. Check that all your JSON parameters are correct."
+    data["code"] = 500
+    return jsonify(error=data), 500
+
+@app.errorhandler(404)
+def page_not_found(e):
+    data = dict()
+    data["message"] = "404 Not Found. The requested URL was not found on the server."
+    data["code"] = 404
+    return jsonify(error=data), 404
+
+@app.errorhandler(405)
+def page_not_found(e):
+    data = dict()
+    data["message"] = "405 Method Not Allowed."
+    data["code"] = 405
+    return jsonify(error=data), 405
 
 # add some filters to jinja
 app.jinja_env.filters['datetimeformat'] = format_datetime

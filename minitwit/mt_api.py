@@ -31,12 +31,31 @@ app = Flask('mt_api')
 app.config.from_object(__name__)
 app.config.from_envvar('MINITWIT_SETTINGS', silent=True)
 
-basic_auth = BasicAuth(app)
+# Subclass basic_auth and override check_credentials method
+class MyAuth(BasicAuth):
+    authorized_username = '';
+
+    def check_credentials(self, username, password):
+        """Logs the user in."""
+        user = query_db('''select * from user where
+            username = ?''', [username], one=True)
+        if user is None:
+            error = 'Invalid username'
+        elif not check_password_hash(user['pw_hash'],
+                                     password):
+            error = 'Invalid password'
+        else:
+            self.authorized_username = username;
+            return True
+        self.authorized_username = ''
+        abort(401)
+
+basic_auth = MyAuth(app)
 
 # ------------------------------------------------------------------------------
-# MINITWIT API START
+# MINITWIT API
 # ------------------------------------------------------------------------------
-#
+
 @app.route('/minitwit/api/public/timeline', methods=['GET'])
 def public_timeline_api():
     """Displays all tweets in the database."""
@@ -73,104 +92,96 @@ def user_timeline_api(username):
         data.append(dict_message)
     return jsonify(data), 200
 
-@app.route('/minitwit/api/personal/timeline', methods=['POST'])
+@app.route('/minitwit/api/personal/timeline', methods=['GET'])
+@basic_auth.required
 def personal_timeline_api():
     """Displays the authenticated user's timeline."""
     content = request.get_json()
-    if basic_auth.check_credentials(content['username'],content['password']):
-        user_id = get_user_id(content['username'])
 
-        messages=query_db('''
-            select user.username, user.email, message.text, message.pub_date
-            from message, user where
-            message.author_id = user.user_id and (
-                user.user_id = ? or
-                user.user_id in (select whom_id from follower
-                                        where who_id = ?))
-            order by message.pub_date desc''',
-            [user_id, user_id])
+    user_id = get_user_id(basic_auth.authorized_username)
 
-        data = list()
-        for message in messages:
-            dict_message = dict(message)
-            dict_message['pub_date'] = format_datetime(dict_message['pub_date'])
-            data.append(dict_message)
-        return jsonify(data), 200
-    else:
-        return generate_error_json("Authentication failed. Check credentials and try again.", 403)
+    messages=query_db('''
+        select user.username, user.email, message.text, message.pub_date
+        from message, user where
+        message.author_id = user.user_id and (
+            user.user_id = ? )
+        order by message.pub_date desc''',
+        [user_id])
 
-@app.route('/minitwit/api/personal/followed', methods=['POST'])
+    data = list()
+    for message in messages:
+        dict_message = dict(message)
+        dict_message['pub_date'] = format_datetime(dict_message['pub_date'])
+        data.append(dict_message)
+    return jsonify(data), 200
+
+@app.route('/minitwit/api/personal/followed', methods=['GET'])
+@basic_auth.required
 def personal_followers_api():
     """Displays all followed users of authenticated user."""
     content = request.get_json()
-    if basic_auth.check_credentials(content['username'],content['password']):
-        user_id = get_user_id(content['username'])
 
-        messages=query_db('''
-            select user.username from user
-            where user.user_id in (select whom_id from follower where who_id = ?)''',[user_id])
+    user_id = get_user_id(basic_auth.authorized_username)
 
-        data = list()
-        for message in messages:
-            data.append(dict(message))
-        return jsonify(data), 200
-    else:
-        return generate_error_json("Authentication failed. Check credentials and try again.", 403)
+    messages=query_db('''
+        select user.username from user
+        where user.user_id in (select whom_id from follower where who_id = ?)''',[user_id])
 
-@app.route('/minitwit/api/personal/add/message', methods=['PUT'])
+    data = list()
+    for message in messages:
+        data.append(dict(message))
+    return jsonify(data), 200
+
+@app.route('/minitwit/api/personal/add/message', methods=['POST'])
+@basic_auth.required
 def add_message_api():
     """Registers a new message for the user."""
     content = request.get_json()
-    if basic_auth.check_credentials(content['username'],content['password']):
-        if content['text']:
-            user_id = get_user_id(content['username'])
-            db = get_db()
-            db.execute('''insert into message (author_id, text, pub_date)
-              values (?, ?, ?)''', (user_id, content['text'],
-                                    int(time.time())))
-            db.commit()
-            return generate_success_json('Your message was recorded', 200)
-        else:
-            return generate_error_json('Unprocessible Entity. Cannot create a message without any text.', 422)
+    if content['text']:
+        user_id = get_user_id(basic_auth.authorized_username)
+        db = get_db()
+        db.execute('''insert into message (author_id, text, pub_date)
+          values (?, ?, ?)''', (user_id, content['text'],
+                                int(time.time())))
+        db.commit()
+        return generate_success_json('Your message was recorded', 200)
     else:
-        return generate_error_json("Authentication failed. Check credentials and try again.", 403)
+        return generate_error_json('Unprocessible Entity. Cannot create a message without any text.', 422)
 
-@app.route('/minitwit/api/personal/follow/<username>', methods=['PUT'])
+@app.route('/minitwit/api/personal/follow/<username>', methods=['POST'])
+@basic_auth.required
 def follow_user_api(username):
     content = request.get_json()
-    if basic_auth.check_credentials(content['username'],content['password']):
-        """Adds the authenticated user as follower of the given user."""
-        whom_id = get_user_id(username)
-        if whom_id is None:
-            abort(404)
-        user_id = get_user_id(content['username'])
-        if whom_id == user_id:
-            return generate_error_json("Unprocessible Entity. You cannot follow yourself.", 422)
-        db = get_db()
-        db.execute('insert into follower (who_id, whom_id) values (?, ?)',
-                  [user_id, whom_id])
-        db.commit()
-        return generate_success_json('You are now following %s' % username, 201)
-    else:
-        return generate_error_json("Authentication failed. Check credentials and try again.", 403)
+
+    """Adds the authenticated user as follower of the given user."""
+    whom_id = get_user_id(username)
+    if whom_id is None:
+        abort(404)
+    user_id = get_user_id(basic_auth.authorized_username)
+    if whom_id == user_id:
+        return generate_error_json("Unprocessible Entity. You cannot follow yourself.", 422)
+    db = get_db()
+    db.execute('insert into follower (who_id, whom_id) values (?, ?)',
+              [user_id, whom_id])
+    db.commit()
+    return generate_success_json('You are now following %s' % username, 201)
 
 @app.route('/minitwit/api/personal/unfollow/<username>', methods=['DELETE'])
+@basic_auth.required
 def unfollow_user_api(username):
     content = request.get_json()
-    if basic_auth.check_credentials(content['username'],content['password']):
-        """Removes the current user as follower of the given user."""
-        whom_id = get_user_id(username)
-        if whom_id is None:
-            abort(404)
-        user_id = get_user_id(content['username'])
-        db = get_db()
-        db.execute('delete from follower where who_id=? and whom_id=?', [user_id, whom_id])
-        db.commit()
-        return generate_success_json('You are no longer following %s' % username, 200)
-    else:
-        return generate_error_json("Authentication failed. Check credentials and try again.", 403)
 
-@app.route('/minitwit/api/register', methods=['PUT'])
+    """Removes the current user as follower of the given user."""
+    whom_id = get_user_id(username)
+    if whom_id is None:
+        abort(404)
+    user_id = get_user_id(basic_auth.authorized_username)
+    db = get_db()
+    db.execute('delete from follower where who_id=? and whom_id=?', [user_id, whom_id])
+    db.commit()
+    return generate_success_json('You are no longer following %s' % username, 200)
+
+@app.route('/minitwit/api/register', methods=['POST'])
 def register_api():
     """Registers the user."""
     content = request.get_json()
@@ -196,30 +207,8 @@ def register_api():
     return generate_error_json('Unprocessible Entity. ' + error, 422)
 
 # ------------------------------------------------------------------------------
-# MINITWIT API END
+# Helper Functions
 # ------------------------------------------------------------------------------
-
-# ------------------------------------------------------------------------------
-# Overide basic_auth methods start
-# ------------------------------------------------------------------------------
-def _check_credentials(username, password):
-    """Logs the user in."""
-    user = query_db('''select * from user where
-        username = ?''', [username], one=True)
-    if user is None:
-        error = 'Invalid username'
-    elif not check_password_hash(user['pw_hash'],
-                                 password):
-        error = 'Invalid password'
-    else:
-        return True
-    return False
-basic_auth.check_credentials = _check_credentials
-
-# ------------------------------------------------------------------------------
-# Override basic_auth methods end
-# ------------------------------------------------------------------------------
-
 def get_db():
     """Opens a new database connection if there is none yet for the
     current application context.
@@ -290,6 +279,9 @@ def gravatar_url(email, size=80):
     return 'https://www.gravatar.com/avatar/%s?d=identicon&s=%d' % \
         (md5(email.strip().lower().encode('utf-8')).hexdigest(), size)
 
+# ------------------------------------------------------------------------------
+# Custom Error/Success Messages
+# ------------------------------------------------------------------------------
 def generate_error_json(message, errorNum):
     data = dict()
     data["message"] = message
@@ -310,11 +302,18 @@ def internal_server_error(e):
     return jsonify(error=data), 500
 
 @app.errorhandler(400)
-def internal_server_error(e):
+def bad_request_error(e):
     data = dict()
     data["message"] = "Bad Request. The browser (or proxy) sent a request that this server could not understand."
     data["code"] = 400
     return jsonify(error=data), 400
+
+@app.errorhandler(401)
+def unauthorized_error(e):
+    data = dict()
+    data["message"] = "Unauthorized. Check credentials and try again."
+    data["code"] = 401
+    return jsonify(error=data), 401
 
 @app.errorhandler(404)
 def page_not_found(e):
@@ -324,7 +323,7 @@ def page_not_found(e):
     return jsonify(error=data), 404
 
 @app.errorhandler(405)
-def page_not_found(e):
+def method_not_allowed_error(e):
     data = dict()
     data["message"] = "405 Method Not Allowed."
     data["code"] = 405

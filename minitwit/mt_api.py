@@ -56,7 +56,7 @@ basic_auth = MyAuth(app)
 # MINITWIT API
 # ------------------------------------------------------------------------------
 
-@app.route('/minitwit/api/public/timeline', methods=['GET'])
+@app.route('/minitwit/api/timeline/public', methods=['GET'])
 def public_timeline_api():
     """Displays all tweets in the database."""
     messages=query_db('''
@@ -71,7 +71,7 @@ def public_timeline_api():
 
     return jsonify(data), 200
 
-@app.route('/minitwit/api/<username>/messages', methods=['GET'])
+@app.route('/minitwit/api/timeline/public/<username>', methods=['GET'])
 def user_timeline_api(username):
     """Display's a users tweets."""
     profile_user = query_db('select * from user where username = ?',
@@ -92,21 +92,21 @@ def user_timeline_api(username):
         data.append(dict_message)
     return jsonify(data), 200
 
-@app.route('/minitwit/api/personal/timeline', methods=['GET'])
+@app.route('/minitwit/api/timeline/personal', methods=['GET'])
 @basic_auth.required
 def personal_timeline_api():
     """Displays the authenticated user's timeline."""
-    content = request.get_json()
-
     user_id = get_user_id(basic_auth.authorized_username)
 
     messages=query_db('''
         select user.username, user.email, message.text, message.pub_date
-        from message, user where
-        message.author_id = user.user_id and (
-            user.user_id = ? )
+        from message, user
+        where message.author_id = user.user_id and (
+            user.user_id = ? or
+            user.user_id in (select whom_id from follower
+                                    where who_id = ?))
         order by message.pub_date desc''',
-        [user_id])
+        [user_id, user_id])
 
     data = list()
     for message in messages:
@@ -115,7 +115,23 @@ def personal_timeline_api():
         data.append(dict_message)
     return jsonify(data), 200
 
-@app.route('/minitwit/api/personal/followed', methods=['GET'])
+@app.route('/minitwit/api/timeline/personal', methods=['POST'])
+@basic_auth.required
+def add_message_api():
+    """Registers a new message for the user."""
+    content = request.get_json()
+    if content['text']:
+        user_id = get_user_id(basic_auth.authorized_username)
+        db = get_db()
+        db.execute('''insert into message (author_id, text, pub_date)
+          values (?, ?, ?)''', (user_id, content['text'],
+                                int(time.time())))
+        db.commit()
+        return generate_success_json('Your message was recorded', 200)
+    else:
+        return generate_error_json('Unprocessible Entity. Cannot create a message without any text.', 422)
+
+@app.route('/minitwit/api/following', methods=['GET'])
 @basic_auth.required
 def personal_followers_api():
     """Displays all followed users of authenticated user."""
@@ -132,31 +148,15 @@ def personal_followers_api():
         data.append(dict(message))
     return jsonify(data), 200
 
-@app.route('/minitwit/api/personal/add/message', methods=['POST'])
+@app.route('/minitwit/api/following', methods=['POST'])
 @basic_auth.required
-def add_message_api():
-    """Registers a new message for the user."""
+def follow_user_api():
     content = request.get_json()
-    if content['text']:
-        user_id = get_user_id(basic_auth.authorized_username)
-        db = get_db()
-        db.execute('''insert into message (author_id, text, pub_date)
-          values (?, ?, ?)''', (user_id, content['text'],
-                                int(time.time())))
-        db.commit()
-        return generate_success_json('Your message was recorded', 200)
-    else:
-        return generate_error_json('Unprocessible Entity. Cannot create a message without any text.', 422)
-
-@app.route('/minitwit/api/personal/follow/<username>', methods=['POST'])
-@basic_auth.required
-def follow_user_api(username):
-    content = request.get_json()
-
     """Adds the authenticated user as follower of the given user."""
+    username = content['username']
     whom_id = get_user_id(username)
     if whom_id is None:
-        abort(404)
+        return generate_error_json("Unprocessible Entity. Provided username does not exist.", 422)
     user_id = get_user_id(basic_auth.authorized_username)
     if whom_id == user_id:
         return generate_error_json("Unprocessible Entity. You cannot follow yourself.", 422)
@@ -166,15 +166,15 @@ def follow_user_api(username):
     db.commit()
     return generate_success_json('You are now following %s' % username, 201)
 
-@app.route('/minitwit/api/personal/unfollow/<username>', methods=['DELETE'])
+@app.route('/minitwit/api/following', methods=['DELETE'])
 @basic_auth.required
-def unfollow_user_api(username):
+def unfollow_user_api():
     content = request.get_json()
-
+    username = content['username']
     """Removes the current user as follower of the given user."""
     whom_id = get_user_id(username)
     if whom_id is None:
-        abort(404)
+        return generate_error_json("Unprocessible Entity. Provided username does not exist.", 422)
     user_id = get_user_id(basic_auth.authorized_username)
     db = get_db()
     db.execute('delete from follower where who_id=? and whom_id=?', [user_id, whom_id])

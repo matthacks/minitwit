@@ -8,7 +8,7 @@
     :copyright: (c) 2015 by Armin Ronacher
     :license: BSD, see LICENSE for more details.
 
-    Changes made by in 2018 by Matt Corrente
+    Changes made in 2018 by Matt Corrente
 """
 
 import time
@@ -148,7 +148,7 @@ def personal_followers_api():
         data.append(dict(message))
     return jsonify(data), 200
 
-@app.route('/minitwit/api/following', methods=['POST'])
+@app.route('/minitwit/api/following', methods=['PUT'])
 @basic_auth.required
 def follow_user_api():
     content = request.get_json()

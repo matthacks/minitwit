@@ -21,13 +21,13 @@ from flask_basicauth import BasicAuth
 from werkzeug import check_password_hash, generate_password_hash
 
 # configuration
-DATABASE = '/tmp/minitwit.db'
+DATABASE = '/tmp/minitwit_api.db'
 PER_PAGE = 30
 DEBUG = False
 SECRET_KEY = b'_5#y2L"F4Q8z\n\xec]/'
 
 # create our little application :)
-app = Flask('mt_api')
+app = Flask('minitwit_api')
 app.config.from_object(__name__)
 app.config.from_envvar('MINITWIT_SETTINGS', silent=True)
 
@@ -66,7 +66,6 @@ def public_timeline_api():
     data = list()
     for message in messages:
       dict_message = dict(message)
-      dict_message['pub_date'] = format_datetime(dict_message['pub_date'])
       data.append(dict_message)
 
     return jsonify(data), 200
@@ -88,7 +87,6 @@ def user_timeline_api(username):
     data = list()
     for message in messages:
         dict_message = dict(message)
-        dict_message['pub_date'] = format_datetime(dict_message['pub_date'])
         data.append(dict_message)
     return jsonify(data), 200
 
@@ -111,7 +109,6 @@ def personal_timeline_api():
     data = list()
     for message in messages:
         dict_message = dict(message)
-        dict_message['pub_date'] = format_datetime(dict_message['pub_date'])
         data.append(dict_message)
     return jsonify(data), 200
 

@@ -10,6 +10,7 @@
 """
 
 import time
+import requests
 from sqlite3 import dbapi2 as sqlite3
 from hashlib import md5
 from datetime import datetime
@@ -20,6 +21,7 @@ from werkzeug import check_password_hash, generate_password_hash
 
 # configuration
 DATABASE = '/tmp/minitwit.db'
+API_BASE_URL='http://127.0.0.1:5000/minitwit/api/'
 PER_PAGE = 30
 DEBUG = True
 SECRET_KEY = b'_5#y2L"F4Q8z\n\xec]/'
@@ -130,10 +132,8 @@ def timeline():
 @app.route('/public')
 def public_timeline():
     """Displays the latest messages of all users."""
-    return render_template('timeline.html', messages=query_db('''
-        select message.*, user.* from message, user
-        where message.author_id = user.user_id
-        order by message.pub_date desc limit ?''', [PER_PAGE]))
+
+    return render_template('timeline.html', messages=requests.get(API_BASE_URL + 'timeline/public').json())
 
 
 @app.route('/<username>')

@@ -1,0 +1,3 @@
+graft minitwit_api/templates
+graft minitwit_api/static
+include minitwit_api/schema.sql

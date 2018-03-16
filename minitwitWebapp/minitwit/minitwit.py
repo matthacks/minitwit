@@ -7,11 +7,12 @@
 
     :copyright: (c) 2015 by Armin Ronacher.
     :license: BSD, see LICENSE for more details.
+
+    Changes made in 2018 by Matt Corrente
 """
 
 import time
 import requests
-from sqlite3 import dbapi2 as sqlite3
 from hashlib import md5
 from datetime import datetime
 from flask import Flask, request, session, url_for, redirect, \
@@ -20,7 +21,6 @@ from werkzeug import check_password_hash, generate_password_hash
 
 
 # configuration
-DATABASE = '/tmp/minitwit.db'
 API_BASE_URL='http://127.0.0.1:5000/minitwit/api/'
 PER_PAGE = 30
 DEBUG = True
@@ -30,67 +30,6 @@ SECRET_KEY = b'_5#y2L"F4Q8z\n\xec]/'
 app = Flask('minitwit')
 app.config.from_object(__name__)
 app.config.from_envvar('MINITWIT_SETTINGS', silent=True)
-
-
-def get_db():
-    """Opens a new database connection if there is none yet for the
-    current application context.
-    """
-    top = _app_ctx_stack.top
-    if not hasattr(top, 'sqlite_db'):
-        top.sqlite_db = sqlite3.connect(app.config['DATABASE'])
-        top.sqlite_db.row_factory = sqlite3.Row
-    return top.sqlite_db
-
-
-@app.teardown_appcontext
-def close_database(exception):
-    """Closes the database again at the end of the request."""
-    top = _app_ctx_stack.top
-    if hasattr(top, 'sqlite_db'):
-        top.sqlite_db.close()
-
-
-def init_db():
-    """Initializes the database."""
-    db = get_db()
-    with app.open_resource('schema.sql', mode='r') as f:
-        db.cursor().executescript(f.read())
-    db.commit()
-
-@app.cli.command('initdb')
-def initdb_command():
-    """Creates the database tables."""
-    init_db()
-    print('Initialized the database.')
-
-def populate_db():
-    """Populate the database with test data."""
-    db = get_db()
-    with app.open_resource('population.sql', mode='r') as f:
-        db.cursor().executescript(f.read())
-    db.commit()
-
-@app.cli.command('populatedb')
-def populatedb_command():
-    """populates the database tables with test data."""
-    populate_db()
-    print('Populated the database.')
-
-
-def query_db(query, args=(), one=False):
-    """Queries the database and returns a list of dictionaries."""
-    cur = get_db().execute(query, args)
-    rv = cur.fetchall()
-    return (rv[0] if rv else None) if one else rv
-
-
-def get_user_id(username):
-    """Convenience method to look up the id for a username."""
-    rv = query_db('select user_id from user where username = ?',
-                  [username], one=True)
-    return rv[0] if rv else None
-
 
 def format_datetime(timestamp):
     """Format a timestamp for display."""
@@ -102,13 +41,11 @@ def gravatar_url(email, size=80):
     return 'https://www.gravatar.com/avatar/%s?d=identicon&s=%d' % \
         (md5(email.strip().lower().encode('utf-8')).hexdigest(), size)
 
-
 @app.before_request
 def before_request():
     g.user = None
     if 'user_id' in session:
-        g.user = query_db('select * from user where user_id = ?',
-                          [session['user_id']], one=True)
+        g.user = {'username': session['user_id']}
 
 
 @app.route('/')
@@ -119,14 +56,7 @@ def timeline():
     """
     if not g.user:
         return redirect(url_for('public_timeline'))
-    return render_template('timeline.html', messages=query_db('''
-        select message.*, user.* from message, user
-        where message.author_id = user.user_id and (
-            user.user_id = ? or
-            user.user_id in (select whom_id from follower
-                                    where who_id = ?))
-        order by message.pub_date desc limit ?''',
-        [session['user_id'], session['user_id'], PER_PAGE]))
+    return render_template('timeline.html', messages=requests.get(API_BASE_URL + 'timeline/personal', auth=(session['user_id'], session['user_password'])).json())
 
 
 @app.route('/public')
@@ -139,22 +69,21 @@ def public_timeline():
 @app.route('/<username>')
 def user_timeline(username):
     """Display's a users tweets."""
-    profile_user = query_db('select * from user where username = ?',
-                            [username], one=True)
-    if profile_user is None:
-        abort(404)
+
     followed = False
     if g.user:
-        followed = query_db('''select 1 from follower where
-            follower.who_id = ? and follower.whom_id = ?''',
-            [session['user_id'], profile_user['user_id']],
-            one=True) is not None
-    return render_template('timeline.html', messages=query_db('''
-            select message.*, user.* from message, user where
-            user.user_id = message.author_id and user.user_id = ?
-            order by message.pub_date desc limit ?''',
-            [profile_user['user_id'], PER_PAGE]), followed=followed,
-            profile_user=profile_user)
+        # obtain JSON containing list of users that current user is following then check if
+        # the user of the displayed profile is in the JSON
+        r = requests.get(API_BASE_URL + 'following', auth=(session['user_id'], session['user_password'])).json()
+        if r != []:
+            for i in r:
+                if username == i['username']:
+                    followed = True
+                    break
+    return render_template('timeline.html',  messages=requests.get(API_BASE_URL +
+     'timeline/public/' + username).json(),
+      followed=followed,
+            profile_user={'username': username})
 
 
 @app.route('/<username>/follow')
@@ -162,15 +91,13 @@ def follow_user(username):
     """Adds the current user as follower of the given user."""
     if not g.user:
         abort(401)
-    whom_id = get_user_id(username)
-    if whom_id is None:
+    r = requests.put(API_BASE_URL + 'following', auth=(session['user_id'], session['user_password']),
+    json={"username": username})
+    if r.status_code == 201:
+        flash('You are now following "%s"' % username)
+        return redirect(url_for('user_timeline', username=username))
+    else:
         abort(404)
-    db = get_db()
-    db.execute('insert into follower (who_id, whom_id) values (?, ?)',
-              [session['user_id'], whom_id])
-    db.commit()
-    flash('You are now following "%s"' % username)
-    return redirect(url_for('user_timeline', username=username))
 
 
 @app.route('/<username>/unfollow')
@@ -178,15 +105,13 @@ def unfollow_user(username):
     """Removes the current user as follower of the given user."""
     if not g.user:
         abort(401)
-    whom_id = get_user_id(username)
-    if whom_id is None:
+    r = requests.delete(API_BASE_URL + 'following', auth=(session['user_id'], session['user_password']),
+    json={"username": username})
+    if r.status_code == 200:
+        flash('You are no longer following "%s"' % username)
+        return redirect(url_for('user_timeline', username=username))
+    else:
         abort(404)
-    db = get_db()
-    db.execute('delete from follower where who_id=? and whom_id=?',
-              [session['user_id'], whom_id])
-    db.commit()
-    flash('You are no longer following "%s"' % username)
-    return redirect(url_for('user_timeline', username=username))
 
 
 @app.route('/add_message', methods=['POST'])
@@ -195,11 +120,8 @@ def add_message():
     if 'user_id' not in session:
         abort(401)
     if request.form['text']:
-        db = get_db()
-        db.execute('''insert into message (author_id, text, pub_date)
-          values (?, ?, ?)''', (session['user_id'], request.form['text'],
-                                int(time.time())))
-        db.commit()
+        r = requests.post(API_BASE_URL + 'timeline/personal', auth=(session['user_id'], session['user_password']),
+        json={"text": request.form['text']})
         flash('Your message was recorded')
     return redirect(url_for('timeline'))
 
@@ -211,17 +133,14 @@ def login():
         return redirect(url_for('timeline'))
     error = None
     if request.method == 'POST':
-        user = query_db('''select * from user where
-            username = ?''', [request.form['username']], one=True)
-        if user is None:
-            error = 'Invalid username'
-        elif not check_password_hash(user['pw_hash'],
-                                     request.form['password']):
-            error = 'Invalid password'
-        else:
+        r = requests.get(API_BASE_URL + 'timeline/personal', auth=(request.form['username'],request.form['password']))
+        if r.status_code == 200:
             flash('You were logged in')
-            session['user_id'] = user['user_id']
+            session['user_id'] = request.form['username']
+            session['user_password'] = request.form['password']
             return redirect(url_for('timeline'))
+        else:
+            error = r.json()['error']['message'];
     return render_template('login.html', error=error)
 
 
@@ -241,17 +160,16 @@ def register():
             error = 'You have to enter a password'
         elif request.form['password'] != request.form['password2']:
             error = 'The two passwords do not match'
-        elif get_user_id(request.form['username']) is not None:
-            error = 'The username is already taken'
         else:
-            db = get_db()
-            db.execute('''insert into user (
-              username, email, pw_hash) values (?, ?, ?)''',
-              [request.form['username'], request.form['email'],
-               generate_password_hash(request.form['password'])])
-            db.commit()
-            flash('You were successfully registered and can login now')
-            return redirect(url_for('login'))
+            pword1 = generate_password_hash(request.form['password'])
+            r = requests.post(API_BASE_URL + 'register', json={"username": request.form['username'],
+            "password": request.form['password'], "password2": request.form['password2'],
+            "email": request.form['email']});
+            if r.status_code == 201:
+                flash('You were successfully registered and can login now')
+                return redirect(url_for('login'))
+            else:
+                error = r.json()['error']['message'];
     return render_template('register.html', error=error)
 
 

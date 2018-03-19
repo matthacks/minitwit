@@ -3,6 +3,10 @@
 
            because writing todo lists is not fun
 
+	~ Prereqs
+	  foreman: command-line utility used to launch multiple instances of the app using Procfile
+	  NGINX: used for load balancing, once you have it installed use the file "default"
+			 located in the main project directory as its configuration file 
 
     ~ What is MiniTwit?
 
@@ -11,22 +15,24 @@
     ~ How do I use it?
 
       1. edit the configuration in the minitwit.py file or
-         export an MINITWIT_SETTINGS environment variable
+         export a MINITWIT_SETTINGS environment variable
          pointing to a configuration file.
 
       2. install both the minitwitWebapp and minitwitAPI apps by running the following 
-		 command from the root of each project directories
+		 command from their respective project directories
 
          pip install --editable .
 
-      4. fire up a shell and run these commands to get the backend running:
-		 export FLASK_APP=minitwit_api
-         flask initdb
-         flask run
+      4. fire up a shell and run these commands to initialize the database:
+		 FLASK_APP=minitwit_api flask initdb
+		 FLASK_APP=minitwit_api flask populatedb
 
-      4. fire up another shell and run these commands to get the frontend running:
-		 export FLASK_APP=minitwit
-         flask run -p 5001
+      5. navigate to the minitwit directory and run this command to launch three instances
+		 of the API and three instances of the web application:
+		 foreman start 
 
-         the webapp will running at
-         http://localhost:5001/
+      You can now reach the web application at:
+      http://127.0.0.1/
+
+	  As you use the web application NGINX will direct you and any backend requests
+	  the application makes to the appropriate servers in a round robin fashion.

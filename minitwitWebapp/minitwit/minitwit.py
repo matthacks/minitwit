@@ -21,7 +21,7 @@ from werkzeug import check_password_hash, generate_password_hash
 
 
 # configuration
-API_BASE_URL='http://127.0.0.1:5000/minitwit/api/'
+API_BASE_URL='http://127.0.0.1:8080'
 PER_PAGE = 30
 DEBUG = True
 SECRET_KEY = b'_5#y2L"F4Q8z\n\xec]/'
@@ -56,14 +56,14 @@ def timeline():
     """
     if not g.user:
         return redirect(url_for('public_timeline'))
-    return render_template('timeline.html', messages=requests.get(API_BASE_URL + 'timeline/personal', auth=(session['user_id'], session['user_password'])).json())
+    return render_template('timeline.html', messages=requests.get(API_BASE_URL + '/minitwit/api/timeline/personal', auth=(session['user_id'], session['user_password'])).json())
 
 
 @app.route('/public')
 def public_timeline():
     """Displays the latest messages of all users."""
 
-    return render_template('timeline.html', messages=requests.get(API_BASE_URL + 'timeline/public').json())
+    return render_template('timeline.html', messages=requests.get(API_BASE_URL + '/minitwit/api/timeline/public').json())
 
 
 @app.route('/<username>')
@@ -74,14 +74,14 @@ def user_timeline(username):
     if g.user:
         # obtain JSON containing list of users that current user is following then check if
         # the user of the displayed profile is in the JSON
-        r = requests.get(API_BASE_URL + 'following', auth=(session['user_id'], session['user_password'])).json()
+        r = requests.get(API_BASE_URL + '/minitwit/api/following', auth=(session['user_id'], session['user_password'])).json()
         if r != []:
             for i in r:
                 if username == i['username']:
                     followed = True
                     break
     return render_template('timeline.html',  messages=requests.get(API_BASE_URL +
-     'timeline/public/' + username).json(),
+     '/minitwit/api/timeline/public/' + username).json(),
       followed=followed,
             profile_user={'username': username})
 
@@ -91,7 +91,7 @@ def follow_user(username):
     """Adds the current user as follower of the given user."""
     if not g.user:
         abort(401)
-    r = requests.put(API_BASE_URL + 'following', auth=(session['user_id'], session['user_password']),
+    r = requests.put(API_BASE_URL + '/minitwit/api/following', auth=(session['user_id'], session['user_password']),
     json={"username": username})
     if r.status_code == 201:
         flash('You are now following "%s"' % username)
@@ -105,7 +105,7 @@ def unfollow_user(username):
     """Removes the current user as follower of the given user."""
     if not g.user:
         abort(401)
-    r = requests.delete(API_BASE_URL + 'following', auth=(session['user_id'], session['user_password']),
+    r = requests.delete(API_BASE_URL + '/minitwit/api/following', auth=(session['user_id'], session['user_password']),
     json={"username": username})
     if r.status_code == 200:
         flash('You are no longer following "%s"' % username)
@@ -120,7 +120,7 @@ def add_message():
     if 'user_id' not in session:
         abort(401)
     if request.form['text']:
-        r = requests.post(API_BASE_URL + 'timeline/personal', auth=(session['user_id'], session['user_password']),
+        r = requests.post(API_BASE_URL + '/minitwit/api/timeline/personal', auth=(session['user_id'], session['user_password']),
         json={"text": request.form['text']})
         flash('Your message was recorded')
     return redirect(url_for('timeline'))
@@ -133,7 +133,7 @@ def login():
         return redirect(url_for('timeline'))
     error = None
     if request.method == 'POST':
-        r = requests.get(API_BASE_URL + 'timeline/personal', auth=(request.form['username'],request.form['password']))
+        r = requests.get(API_BASE_URL + '/minitwit/api/timeline/personal', auth=(request.form['username'],request.form['password']))
         if r.status_code == 200:
             flash('You were logged in')
             session['user_id'] = request.form['username']
@@ -162,7 +162,7 @@ def register():
             error = 'The two passwords do not match'
         else:
             pword1 = generate_password_hash(request.form['password'])
-            r = requests.post(API_BASE_URL + 'register', json={"username": request.form['username'],
+            r = requests.post(API_BASE_URL + '/minitwit/api/register', json={"username": request.form['username'],
             "password": request.form['password'], "password2": request.form['password2'],
             "email": request.form['email']});
             if r.status_code == 201:

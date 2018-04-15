@@ -12,7 +12,7 @@
 """
 
 import time
-from sqlite3 import dbapi2 as sqlite3
+from cassandra.cluster import Cluster
 from hashlib import md5
 from datetime import datetime
 from flask import Flask, request, session, url_for, redirect, \
@@ -211,26 +211,28 @@ def get_db():
     current application context.
     """
     top = _app_ctx_stack.top
-    if not hasattr(top, 'sqlite_db'):
-        top.sqlite_db = sqlite3.connect(app.config['DATABASE'])
-        top.sqlite_db.row_factory = sqlite3.Row
-    return top.sqlite_db
+    if not hasattr(top, 'cassandra_db'):
+        cluster = Cluster()
+        top.cassandra_db = cluster.connect()
+    return top.cassandra_db
 
 
 @app.teardown_appcontext
 def close_database(exception):
     """Closes the database again at the end of the request."""
     top = _app_ctx_stack.top
-    if hasattr(top, 'sqlite_db'):
-        top.sqlite_db.close()
+    if hasattr(top, 'cassandra_db'):
+        top.cassandra_db.shutdown()
 
 
 def init_db():
     """Initializes the database."""
     db = get_db()
-    with app.open_resource('schema.sql', mode='r') as f:
-        db.cursor().executescript(f.read())
-    db.commit()
+    with app.open_resource('schema.cql', mode='r') as f:
+        queries = f.read().split(';')
+        queries.pop() # delete the EOF element
+        for q in queries:
+            db.execute(q)
 
 @app.cli.command('initdb')
 def initdb_command():
@@ -241,9 +243,11 @@ def initdb_command():
 def populate_db():
     """Populate the database with test data."""
     db = get_db()
-    with app.open_resource('population.sql', mode='r') as f:
-        db.cursor().executescript(f.read())
-    db.commit()
+    with app.open_resource('population.cql', mode='r') as f:
+        queries = f.read().split(';')
+        queries.pop() # delete the EOF element
+        for q in queries:
+            db.execute(q)
 
 @app.cli.command('populatedb')
 def populatedb_command():

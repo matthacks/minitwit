@@ -13,6 +13,7 @@
 
 import time
 from cassandra.cluster import Cluster
+from cassandra.query import dict_factory
 from hashlib import md5
 from datetime import datetime
 from flask import Flask, request, session, url_for, redirect, \
@@ -37,11 +38,10 @@ class MyAuth(BasicAuth):
 
     def check_credentials(self, username, password):
         """Logs the user in."""
-        user = query_db('''select * from user where
-            username = ?''', [username], one=True)
-        if user is None:
+        user = query_db("select * from minitwit.user where username = \'?\'", [username])
+        if not user:
             error = 'Invalid username'
-        elif not check_password_hash(user['pw_hash'],
+        elif not check_password_hash(user[0].pw_hash,
                                      password):
             error = 'Invalid password'
         else:
@@ -60,34 +60,32 @@ basic_auth = MyAuth(app)
 def public_timeline_api():
     """Displays all tweets in the database."""
     messages=query_db('''
-        select user.username, user.email, message.text, message.pub_date from message, user
-        where message.author_id = user.user_id
-        order by message.pub_date desc''')
+        select * from minitwit.message
+    ''')
     data = list()
     for message in messages:
-      dict_message = dict(message)
-      data.append(dict_message)
-
+        dict_message = dict(message)
+        data.append(dict_message)
     return jsonify(data), 200
 
 @app.route('/minitwit/api/timeline/public/<username>', methods=['GET'])
 def user_timeline_api(username):
     """Display's a users tweets."""
-    profile_user = query_db('select * from user where username = ?',
-                            [username], one=True)
+
+    profile_user = query_db('select username from minitwit.user where username = \'?\'',[username])
     if profile_user is None:
         abort(404)
     followed = False
-    messages=query_db('''
-            select user.username, user.email, message.text, message.pub_date from message, user where
-            user.user_id = message.author_id and user.user_id = ?
-            order by message.pub_date desc''',
-            [profile_user['user_id']])
+
+    # get all of the message_id's for a given user
+    message_ids = query_db('select message_id from minitwit.timelines where username = \'?\'', [username])
 
     data = list()
-    for message in messages:
+    for m_id in message_ids:
+        message=query_db('select * from minitwit.message where message_id = ?', [m_id])
         dict_message = dict(message)
         data.append(dict_message)
+
     return jsonify(data), 200
 
 @app.route('/minitwit/api/timeline/personal', methods=['GET'])
@@ -213,7 +211,8 @@ def get_db():
     top = _app_ctx_stack.top
     if not hasattr(top, 'cassandra_db'):
         cluster = Cluster()
-        top.cassandra_db = cluster.connect()
+        top.cassandra_db = cluster.connect('minitwit')
+        top.cassandra_db.row_factory = dict_factory
     return top.cassandra_db
 
 
@@ -258,10 +257,11 @@ def populatedb_command():
 
 def query_db(query, args=(), one=False):
     """Queries the database and returns a list of dictionaries."""
-    cur = get_db().execute(query, args)
-    rv = cur.fetchall()
-    return (rv[0] if rv else None) if one else rv
-
+    cur = get_db().execute(query)
+    # print(cur)
+    #rv = cur.fetchall()
+    #return (rv[0] if rv else None) if one else rv
+    return cur
 
 def get_user_id(username):
     """Convenience method to look up the id for a username."""

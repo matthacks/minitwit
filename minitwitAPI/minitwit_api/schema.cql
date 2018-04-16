@@ -23,7 +23,7 @@ create table minitwit.message (
   username text,
   email text,
   text text,
-  pub_date timestamp,
+  pub_date float,
   primary key(message_id)
 );
 
@@ -31,5 +31,5 @@ drop table if exists minitwit.timelines;
 create table minitwit.timelines (
 username text,
 message_id timeuuid,
-pub_date timestamp,
+pub_date float,
 primary key((username),pub_date, message_id));

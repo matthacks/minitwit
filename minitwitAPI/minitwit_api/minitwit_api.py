@@ -1,3 +1,5 @@
+from __future__ import print_function
+import sys
 # -*- coding: utf-8 -*-
 """
     mt_api
@@ -38,10 +40,10 @@ class MyAuth(BasicAuth):
 
     def check_credentials(self, username, password):
         """Logs the user in."""
-        user = query_db("select * from minitwit.user where username = \'?\'", [username])
-        if not user:
+        user = query_db('select * from minitwit.user where username = \''+ username +'\'')
+        if  len(user.current_rows) == 0:
             error = 'Invalid username'
-        elif not check_password_hash(user[0].pw_hash,
+        elif not check_password_hash(user[0]['pw_hash'],
                                      password):
             error = 'Invalid password'
         else:
@@ -72,18 +74,19 @@ def public_timeline_api():
 def user_timeline_api(username):
     """Display's a users tweets."""
 
-    profile_user = query_db('select username from minitwit.user where username = \'?\'',[username])
+    profile_user = query_db('select username from minitwit.user where username = \'' + username + '\'')
     if profile_user is None:
         abort(404)
     followed = False
 
     # get all of the message_id's for a given user
-    message_ids = query_db('select message_id from minitwit.timelines where username = \'?\'', [username])
+    message_ids = query_db('select message_id from minitwit.timelines where username = \'' + username + '\'')
 
     data = list()
     for m_id in message_ids:
-        message=query_db('select * from minitwit.message where message_id = ?', [m_id])
-        dict_message = dict(message)
+        message=query_db('select * from minitwit.message where message_id = ' +  str(m_id['message_id']))
+        print(message[0], file=sys.stderr)
+        dict_message = dict(message[0])
         data.append(dict_message)
 
     return jsonify(data), 200
@@ -92,22 +95,17 @@ def user_timeline_api(username):
 @basic_auth.required
 def personal_timeline_api():
     """Displays the authenticated user's timeline."""
-    user_id = get_user_id(basic_auth.authorized_username)
 
-    messages=query_db('''
-        select user.username, user.email, message.text, message.pub_date
-        from message, user
-        where message.author_id = user.user_id and (
-            user.user_id = ? or
-            user.user_id in (select whom_id from follower
-                                    where who_id = ?))
-        order by message.pub_date desc''',
-        [user_id, user_id])
+    # get all of the message_id's for a given user
+    message_ids = query_db('select message_id from minitwit.timelines where username = \'' + basic_auth.authorized_username + '\'')
 
     data = list()
-    for message in messages:
-        dict_message = dict(message)
+    for m_id in message_ids:
+        message=query_db('select * from minitwit.message where message_id = ' +  str(m_id['message_id']))
+        print(message[0], file=sys.stderr)
+        dict_message = dict(message[0])
         data.append(dict_message)
+
     return jsonify(data), 200
 
 @app.route('/minitwit/api/timeline/personal', methods=['POST'])
@@ -189,15 +187,11 @@ def register_api():
         error = 'You have to enter a password.'
     elif content['password'] != content['password2']:
         error = 'The two passwords do not match.'
-    elif get_user_id(content['username']) is not None:
+    elif (len(query_db('select * from minitwit.user where username = \''+ content['username'] +'\'').current_rows) is not 0):
         error = 'The username is already taken.'
     else:
         db = get_db()
-        db.execute('''insert into user (
-          username, email, pw_hash) values (?, ?, ?)''',
-          [content['username'], content['email'],
-           generate_password_hash(content['password'])])
-        db.commit()
+        db.execute(('insert into minitwit.user (username, email, pw_hash) values (\'' + content['username'] + '\', \'' + content['email'] + '\', \'' + generate_password_hash(content['password']) + '\')'))
         return generate_success_json('Account successfully registered', 201)
     return generate_error_json('Unprocessible Entity. ' + error, 422)
 

@@ -3,33 +3,19 @@ create keyspace minitwit with replication = {'class': 'SimpleStrategy', 'replica
 
 drop table if exists minitwit.user;
 create table minitwit.user (
-
   username text,
   email text,
   pw_hash text,
-  primary key(username)
-);
-
-drop table if exists minitwit.follower;
-create table minitwit.follower (
-  who text,
   whom list<text>,
-  primary key(who)
+  primary key(username)
 );
 
 drop table if exists minitwit.message;
 create table minitwit.message (
-  message_id timeuuid,
   username text,
+  pub_date float,
   email text,
   text text,
-  pub_date float,
-  primary key(message_id)
-);
+  primary key(username, pub_date) 
+) with clustering order by (pub_date desc);
 
-drop table if exists minitwit.timelines;
-create table minitwit.timelines (
-username text,
-message_id timeuuid,
-pub_date float,
-primary key((username),pub_date, message_id));

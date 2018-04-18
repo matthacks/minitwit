@@ -12,7 +12,7 @@ import sys
 
     Changes made in 2018 by Matt Corrente
 """
-
+import datetime
 import time
 from cassandra.cluster import Cluster
 from cassandra.query import dict_factory
@@ -65,6 +65,7 @@ def public_timeline_api():
         select * from minitwit.message
     ''')
     data = list()
+    print(messages[0], file=sys.stderr)
     for message in messages:
         dict_message = dict(message)
         data.append(dict_message)
@@ -79,16 +80,24 @@ def user_timeline_api(username):
         abort(404)
     followed = False
 
-    # get all of the message_id's for a given user
-    message_ids = query_db('select message_id from minitwit.timelines where username = \'' + username + '\'')
-
     data = list()
-    for m_id in message_ids:
-        message=query_db('select * from minitwit.message where message_id = ' +  str(m_id['message_id']))
-        print(message[0], file=sys.stderr)
-        dict_message = dict(message[0])
-        data.append(dict_message)
+    # get all of the message_id's for a given user
+    followers = query_db('select whom from minitwit.user where username = \'' + username + '\'')
+    if  len(followers.current_rows) is not 0 and followers[0]['whom'] is not None:
+        items = []
+        for x in followers[0]['whom']:
+            x = x.encode('utf-8')
+            items.append(x)
+        items = tuple(items)
+        if len(items) == 1:
+            items = '(\'' + items[0] + '\')'
+        q = 'select * from minitwit.message where username in ' + str(items)
+        print(q, file=sys.stderr)
 
+        messages=query_db(q)
+        for message in messages:
+            dict_message = dict(message)
+            data.append(dict_message)
     return jsonify(data), 200
 
 @app.route('/minitwit/api/timeline/personal', methods=['GET'])
@@ -96,30 +105,38 @@ def user_timeline_api(username):
 def personal_timeline_api():
     """Displays the authenticated user's timeline."""
 
-    # get all of the message_id's for a given user
-    message_ids = query_db('select message_id from minitwit.timelines where username = \'' + basic_auth.authorized_username + '\'')
-
     data = list()
-    for m_id in message_ids:
-        message=query_db('select * from minitwit.message where message_id = ' +  str(m_id['message_id']))
-        print(message[0], file=sys.stderr)
-        dict_message = dict(message[0])
-        data.append(dict_message)
+    # get all of the message_id's for a given user
+    followers = query_db('select whom from minitwit.user where username = \'' + basic_auth.authorized_username + '\'')
+    if  len(followers.current_rows) is not 0 and followers[0]['whom'] is not None:
+        items = []
+        for x in followers[0]['whom']:
+            x = x.encode('utf-8')
+            items.append(x)
+        items = tuple(items)
+        if len(items) == 1:
+            items = '(\'' + items[0] + '\')'
+        q = 'select * from minitwit.message where username in ' + str(items)
+        print(q, file=sys.stderr)
 
+        messages=query_db(q)
+        for message in messages:
+            dict_message = dict(message)
+            data.append(dict_message)
     return jsonify(data), 200
+
 
 @app.route('/minitwit/api/timeline/personal', methods=['POST'])
 @basic_auth.required
 def add_message_api():
+
     """Registers a new message for the user."""
     content = request.get_json()
     if content['text']:
-        user_id = get_user_id(basic_auth.authorized_username)
-        db = get_db()
-        db.execute('''insert into message (author_id, text, pub_date)
-          values (?, ?, ?)''', (user_id, content['text'],
-                                int(time.time())))
-        db.commit()
+        email = query_db('select email from minitwit.user where username = \'' + basic_auth.authorized_username + '\'')
+        q = 'insert into minitwit.message (username, email, text, pub_date) values (\'' + basic_auth.authorized_username + '\', \'' + email[0]['email'] + '\', \'' + content['text'] + '\', ' + str(time.time()) + ')'
+        print(q, file=sys.stderr)
+        query_db(q)
         return generate_success_json('Your message was recorded', 200)
     else:
         return generate_error_json('Unprocessible Entity. Cannot create a message without any text.', 422)
@@ -130,15 +147,15 @@ def personal_followers_api():
     """Displays all followed users of authenticated user."""
     content = request.get_json()
 
-    user_id = get_user_id(basic_auth.authorized_username)
-
-    messages=query_db('''
-        select user.username from user
-        where user.user_id in (select whom_id from follower where who_id = ?)''',[user_id])
-
     data = list()
-    for message in messages:
-        data.append(dict(message))
+    followers=query_db('select whom from minitwit.user where username = \'' + basic_auth.authorized_username + '\' ')
+    if  len(followers.current_rows) is not 0 and followers[0]['whom'] is not None:
+        names = followers[0]['whom']
+        for name in names:
+            dict_message = dict({'username': name})
+            data.append(dict_message)
+        print(data, file=sys.stderr)
+
     return jsonify(data), 200
 
 @app.route('/minitwit/api/following', methods=['PUT'])
@@ -147,31 +164,24 @@ def follow_user_api():
     content = request.get_json()
     """Adds the authenticated user as follower of the given user."""
     username = content['username']
-    whom_id = get_user_id(username)
-    if whom_id is None:
+    if (len(query_db('select * from minitwit.user where username = \''+ username +'\'').current_rows) is 0):
         return generate_error_json("Unprocessible Entity. Provided username does not exist.", 422)
-    user_id = get_user_id(basic_auth.authorized_username)
-    if whom_id == user_id:
+    if username == basic_auth.authorized_username:
         return generate_error_json("Unprocessible Entity. You cannot follow yourself.", 422)
-    db = get_db()
-    db.execute('insert into follower (who_id, whom_id) values (?, ?)',
-              [user_id, whom_id])
-    db.commit()
+    query_db('update minitwit.user set whom = whom + [\''+ username +'\'] where username = \'' + basic_auth.authorized_username + '\'')
     return generate_success_json('You are now following %s' % username, 201)
+
 
 @app.route('/minitwit/api/following', methods=['DELETE'])
 @basic_auth.required
 def unfollow_user_api():
     content = request.get_json()
+    """Adds the authenticated user as follower of the given user."""
     username = content['username']
-    """Removes the current user as follower of the given user."""
-    whom_id = get_user_id(username)
-    if whom_id is None:
+    if (len(query_db('select * from minitwit.user where username = \''+ username +'\'').current_rows) is 0):
         return generate_error_json("Unprocessible Entity. Provided username does not exist.", 422)
-    user_id = get_user_id(basic_auth.authorized_username)
-    db = get_db()
-    db.execute('delete from follower where who_id=? and whom_id=?', [user_id, whom_id])
-    db.commit()
+
+    query_db('update minitwit.user set whom = whom - [\''+ username +'\'] where username = \'' + basic_auth.authorized_username + '\'')
     return generate_success_json('You are no longer following %s' % username, 200)
 
 @app.route('/minitwit/api/register', methods=['POST'])
@@ -191,7 +201,7 @@ def register_api():
         error = 'The username is already taken.'
     else:
         db = get_db()
-        db.execute(('insert into minitwit.user (username, email, pw_hash) values (\'' + content['username'] + '\', \'' + content['email'] + '\', \'' + generate_password_hash(content['password']) + '\')'))
+        db.execute(('insert into minitwit.user (username, email, pw_hash, whom) values (\'' + content['username'] + '\', \'' + content['email'] + '\', \'' + generate_password_hash(content['password']) + '\', [\''+ content['username'] +'\'])'))
         return generate_success_json('Account successfully registered', 201)
     return generate_error_json('Unprocessible Entity. ' + error, 422)
 
@@ -208,7 +218,6 @@ def get_db():
         top.cassandra_db = cluster.connect('minitwit')
         top.cassandra_db.row_factory = dict_factory
     return top.cassandra_db
-
 
 @app.teardown_appcontext
 def close_database(exception):
